@@ -29,10 +29,52 @@ updateRecordset () {
     echo "-----"
 }
 
-# Attempt to retrieve public IPv4 and IPv6 (can use +tries=x +time=y if the timeout is too long)
-echo "Querying public IP addresses for the EC2..."
-ec2_ipv4="$(dig -4 +short txt ch whoami.cloudflare @1.0.0.1 | tr -d '"')"
-ec2_ipv6="$(dig -6 +short txt ch whoami.cloudflare @2606:4700:4700::1001 | tr -d '"')"
+# Attempt to retrieve public IPv4 and IPv6 with retry logic
+max_retries=5
+retry_delay=10
+ec2_ipv4=""
+ec2_ipv6=""
+
+for ((attempt=1; attempt<=max_retries; attempt++)); do
+    echo "Querying public IP addresses (attempt $attempt/$max_retries)..."
+
+    # Try to get IPv4 if not yet retrieved
+    if [[ -z "$ec2_ipv4" ]]; then
+        ec2_ipv4_raw="$(dig -4 +short txt ch whoami.cloudflare @1.0.0.1 2>/dev/null | tr -d '"')"
+        if [[ "$ec2_ipv4_raw" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            ec2_ipv4="$ec2_ipv4_raw"
+            echo "IPv4 retrieved: $ec2_ipv4"
+        fi
+    fi
+
+    # Try to get IPv6 if not yet retrieved
+    if [[ -z "$ec2_ipv6" ]]; then
+        ec2_ipv6_raw="$(dig -6 +short txt ch whoami.cloudflare @2606:4700:4700::1001 2>/dev/null | tr -d '"')"
+        if [[ "$ec2_ipv6_raw" =~ ^[0-9a-fA-F:]+$ ]]; then
+            ec2_ipv6="$ec2_ipv6_raw"
+            echo "IPv6 retrieved: $ec2_ipv6"
+        fi
+    fi
+
+    # If we have at least one IP, we can proceed
+    if [[ -n "$ec2_ipv4" || -n "$ec2_ipv6" ]]; then
+        break
+    fi
+
+    # Don't sleep on the last attempt
+    if ((attempt < max_retries)); then
+        echo "No IPs retrieved yet, retrying in ${retry_delay}s..."
+        sleep $retry_delay
+    fi
+done
+
+# Log warnings for any IPs we couldn't retrieve
+if [[ -z "$ec2_ipv4" ]]; then
+    echo "Warning: Failed to retrieve valid IPv4 address after $max_retries attempts"
+fi
+if [[ -z "$ec2_ipv6" ]]; then
+    echo "Warning: Failed to retrieve valid IPv6 address after $max_retries attempts"
+fi
 
 # Get IP for subdomain record
 recordset_subdomain=`aws route53 list-resource-record-sets --hosted-zone-id ${zone_id} | jq ".ResourceRecordSets[] | select(.Name==\"${subdomain}.${fqdn}.\")"`
