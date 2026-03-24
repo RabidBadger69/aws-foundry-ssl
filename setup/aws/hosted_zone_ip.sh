@@ -11,12 +11,12 @@ TTL=120
 REMOVE_STALE_AAAA=true
 
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
 }
 
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || {
-        echo "Required command not found: $1"
+        echo "Required command not found: $1" >&2
         exit 1
     }
 }
@@ -61,6 +61,7 @@ get_instance_network_info() {
 
 get_preferred_public_ipv4() {
     local eip=""
+    local public_ipv4=""
 
     eip="$(aws ec2 describe-addresses \
         --region "${REGION}" \
@@ -68,13 +69,12 @@ get_preferred_public_ipv4() {
         --query 'Addresses[0].PublicIp' \
         --output text 2>/dev/null || true)"
 
-    if [[ -n "${eip}" && "${eip}" != "None" ]]; then
+    if [[ -n "${eip}" && "${eip}" != "None" && "${eip}" != "null" ]]; then
         log "Using Elastic IP: ${eip}"
         echo "${eip}"
         return 0
     fi
 
-    local public_ipv4=""
     public_ipv4="$(get_metadata "public-ipv4" "${IMDS_TOKEN}" 2>/dev/null || true)"
 
     if [[ -n "${public_ipv4}" ]]; then
@@ -83,7 +83,8 @@ get_preferred_public_ipv4() {
         return 0
     fi
 
-    return 1
+    log "Could not determine any public IPv4 address"
+    return 0
 }
 
 get_public_ipv6_from_metadata() {
@@ -218,7 +219,7 @@ sync_record() {
 
 main() {
     if [[ -z "${zone_id:-}" ]]; then
-        echo "zone_id is not set in /foundryssl/variables.sh"
+        echo "zone_id is not set in /foundryssl/variables.sh" >&2
         exit 1
     fi
 
