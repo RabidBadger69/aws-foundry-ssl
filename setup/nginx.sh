@@ -9,7 +9,7 @@ source /foundryssl/variables.sh
 
 echo "===== NGINX SETUP START ====="
 
-if [[ "${webserver_bool}" == "True" ]]; then
+if [[ "${webserver_bool:-False}" == "True" ]]; then
   foundry_file="foundryvtt_webserver.conf"
 else
   foundry_file="foundryvtt.conf"
@@ -36,11 +36,13 @@ sed -i "s/YOURSUBDOMAINHERE/${subdomain}/g" /etc/nginx/conf.d/foundryvtt.conf
 sed -i "s/YOURDOMAINHERE/${fqdn}/g" /etc/nginx/conf.d/foundryvtt.conf
 
 # Install helper include used by the Foundry/certbot flow
-cp /aws-foundry-ssl/setup/nginx/drop /etc/nginx/conf.d/drop
+if [[ -f /aws-foundry-ssl/setup/nginx/drop ]]; then
+  cp /aws-foundry-ssl/setup/nginx/drop /etc/nginx/conf.d/drop
+  chmod 644 /etc/nginx/conf.d/drop
+fi
 
-# Ensure correct ownership/permissions for nginx config files
+# Ensure correct permissions for nginx config files
 chmod 644 /etc/nginx/conf.d/foundryvtt.conf
-chmod 644 /etc/nginx/conf.d/drop
 
 # Configure Foundry to run behind nginx on HTTP first.
 # certbot.sh can later switch proxyPort/proxySSL to 443/true.
@@ -48,7 +50,6 @@ if [[ -f /foundrydata/Config/options.json ]]; then
   sed -i "s/\"hostname\":.*/\"hostname\": \"${subdomain}.${fqdn}\",/g" /foundrydata/Config/options.json
   sed -i 's/"proxyPort":.*/"proxyPort": "80",/g' /foundrydata/Config/options.json
 
-  # Only force proxySSL false if the field exists already
   if grep -q '"proxySSL":' /foundrydata/Config/options.json; then
     sed -i 's/"proxySSL":.*/"proxySSL": false,/g' /foundrydata/Config/options.json
   fi
@@ -57,7 +58,7 @@ else
 fi
 
 # Optional static website setup
-if [[ "${webserver_bool}" == "True" ]]; then
+if [[ "${webserver_bool:-False}" == "True" ]]; then
   echo "Setting up optional webserver content..."
   git clone https://github.com/zkkng/foundry-website.git /foundry-website
   cp -rf /foundry-website/* /usr/share/nginx/html
