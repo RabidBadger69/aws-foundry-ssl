@@ -63,8 +63,17 @@ nginx -t || true
 systemctl enable --now nginx || true
 systemctl restart nginx || true
 
-echo "Looking up instance public IP..."
-PUBLIC_IP="$(curl -fsS http://169.254.169.254/latest/meta-data/public-ipv4 || true)"
+echo "Looking up instance public IP via IMDSv2..."
+TOKEN="$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" || true)"
+
+if [[ -n "${TOKEN}" ]]; then
+  PUBLIC_IP="$(curl -fsS \
+    -H "X-aws-ec2-metadata-token: ${TOKEN}" \
+    http://169.254.169.254/latest/meta-data/public-ipv4 || true)"
+else
+  PUBLIC_IP=""
+fi
 
 if [[ -z "${PUBLIC_IP}" ]]; then
   echo "Could not determine public IPv4 from instance metadata."
