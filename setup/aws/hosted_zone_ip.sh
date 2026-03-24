@@ -1,142 +1,265 @@
 #!/bin/bash
+set -euo pipefail
+
 source /foundryssl/variables.sh
 
 # NOTE:
 # This script does not account for CloudFront (*.cloudfront.net).
 # It updates Route53 A / AAAA records directly to the instance public IPs.
 
-updateRecordset() {
-    # $1 - Descriptor for logging - "IPv4" or "IPv6"
-    # $2 - Record name eg. "play.example.com"
-    # $3 - EC2 IP
-    # $4 - Record type - "A" or "AAAA"
-    # $5 - RecordSet JSON blob from Route53
+TTL=120
+REMOVE_STALE_AAAA=true
 
-    local descriptor="$1"
-    local record_name="$2"
-    local ec2_ip="$3"
-    local record_type="$4"
-    local recordset_blob="$5"
-    local recordset_ip=""
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
 
-    if [[ -z "${ec2_ip}" ]]; then
-        echo "No local ${descriptor} address set; skipping..."
-        echo "-----"
-        return 0
-    fi
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || {
+        echo "Required command not found: $1"
+        exit 1
+    }
+}
 
-    recordset_ip="$(echo "${recordset_blob}" | jq -r "select(.Type==\"${record_type}\") | .ResourceRecords[]?.Value" 2>/dev/null | head -n1 || true)"
+require_cmd aws
+require_cmd jq
+require_cmd curl
+require_cmd ip
 
-    echo "EC2 ${descriptor} Address: ${ec2_ip}"
-    echo "RRS ${descriptor} Address: ${recordset_ip}"
+get_imdsv2_token() {
+    curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+        -H "X-aws-ec2-metadata-token-ttl-seconds: 21600"
+}
 
-    if [[ "${ec2_ip}" != "${recordset_ip}" ]]; then
-        echo "Requesting change for ${record_name} ${descriptor} to ${ec2_ip}"
-        aws route53 change-resource-record-sets \
-            --hosted-zone-id "${zone_id}" \
-            --change-batch "{
-              \"Comment\": \"Dynamic DNS change\",
-              \"Changes\": [
-                {
-                  \"Action\": \"UPSERT\",
-                  \"ResourceRecordSet\": {
-                    \"Name\": \"${record_name}.\",
-                    \"Type\": \"${record_type}\",
-                    \"TTL\": 120,
-                    \"ResourceRecords\": [
-                      { \"Value\": \"${ec2_ip}\" }
-                    ]
-                  }
-                }
-              ]
-            }"
-    else
-        echo "${descriptor} matches, no change needed."
-    fi
+get_metadata() {
+    local path="$1"
+    local token="$2"
+    curl -fsS -H "X-aws-ec2-metadata-token: ${token}" \
+        "http://169.254.169.254/latest/meta-data/${path}"
+}
 
-    echo "-----"
+get_dynamic_metadata() {
+    local path="$1"
+    local token="$2"
+    curl -fsS -H "X-aws-ec2-metadata-token: ${token}" \
+        "http://169.254.169.254/latest/dynamic/${path}"
 }
 
 has_global_ipv6() {
-    ip -6 addr show scope global 2>/dev/null | grep -q "inet6" || return 1
+    ip -6 addr show scope global 2>/dev/null | grep -q "inet6"
 }
 
-get_public_ipv4() {
-    dig -4 +short txt ch whoami.cloudflare @1.0.0.1 2>/dev/null | tr -d '"' | head -n1 || true
+get_instance_network_info() {
+    local token="$1"
+
+    INSTANCE_ID="$(get_metadata "instance-id" "${token}")"
+    REGION="$(get_dynamic_metadata "instance-identity/document" "${token}" | jq -r '.region')"
+
+    log "Instance ID: ${INSTANCE_ID}"
+    log "Region: ${REGION}"
 }
 
-get_public_ipv6() {
+get_preferred_public_ipv4() {
+    local eip=""
+
+    eip="$(aws ec2 describe-addresses \
+        --region "${REGION}" \
+        --filters "Name=instance-id,Values=${INSTANCE_ID}" \
+        --query 'Addresses[0].PublicIp' \
+        --output text 2>/dev/null || true)"
+
+    if [[ -n "${eip}" && "${eip}" != "None" ]]; then
+        log "Using Elastic IP: ${eip}"
+        echo "${eip}"
+        return 0
+    fi
+
+    local public_ipv4=""
+    public_ipv4="$(get_metadata "public-ipv4" "${IMDS_TOKEN}" 2>/dev/null || true)"
+
+    if [[ -n "${public_ipv4}" ]]; then
+        log "Using instance public IPv4: ${public_ipv4}"
+        echo "${public_ipv4}"
+        return 0
+    fi
+
+    return 1
+}
+
+get_public_ipv6_from_metadata() {
     if ! has_global_ipv6; then
         return 0
     fi
 
-    dig -6 +short txt ch whoami.cloudflare @2606:4700:4700::1001 2>/dev/null | tr -d '"' | head -n1 || true
+    local mac
+    mac="$(get_metadata "mac" "${IMDS_TOKEN}" 2>/dev/null || true)"
+
+    if [[ -z "${mac}" ]]; then
+        return 0
+    fi
+
+    local ipv6s
+    ipv6s="$(get_metadata "network/interfaces/macs/${mac}/ipv6s" "${IMDS_TOKEN}" 2>/dev/null || true)"
+
+    if [[ -n "${ipv6s}" ]]; then
+        echo "${ipv6s}" | head -n1
+    fi
 }
 
-# Attempt to retrieve public IPv4 and IPv6 with retry logic
-max_retries=5
-retry_delay=10
-ec2_ipv4=""
-ec2_ipv6=""
+list_recordsets() {
+    aws route53 list-resource-record-sets --hosted-zone-id "${zone_id}"
+}
 
-for ((attempt=1; attempt<=max_retries; attempt++)); do
-    echo "Querying public IP addresses (attempt ${attempt}/${max_retries})..."
+get_recordset_json() {
+    local record_name="$1"
+    local all_recordsets="$2"
+
+    echo "${all_recordsets}" | jq ".ResourceRecordSets[] | select(.Name==\"${record_name}.\")"
+}
+
+get_record_value() {
+    local record_type="$1"
+    local recordset_blob="$2"
+
+    echo "${recordset_blob}" | jq -r "select(.Type==\"${record_type}\") | .ResourceRecords[]?.Value" 2>/dev/null | head -n1 || true
+}
+
+upsert_recordset() {
+    local record_name="$1"
+    local record_type="$2"
+    local record_value="$3"
+
+    log "UPSERT ${record_type} ${record_name} -> ${record_value}"
+
+    aws route53 change-resource-record-sets \
+        --hosted-zone-id "${zone_id}" \
+        --change-batch "{
+          \"Comment\": \"Dynamic DNS change\",
+          \"Changes\": [
+            {
+              \"Action\": \"UPSERT\",
+              \"ResourceRecordSet\": {
+                \"Name\": \"${record_name}.\",
+                \"Type\": \"${record_type}\",
+                \"TTL\": ${TTL},
+                \"ResourceRecords\": [
+                  { \"Value\": \"${record_value}\" }
+                ]
+              }
+            }
+          ]
+        }"
+}
+
+delete_recordset_if_present() {
+    local record_name="$1"
+    local record_type="$2"
+    local record_value="$3"
+
+    if [[ -z "${record_value}" ]]; then
+        log "No existing ${record_type} record for ${record_name}; nothing to delete."
+        return 0
+    fi
+
+    log "DELETE ${record_type} ${record_name} -> ${record_value}"
+
+    aws route53 change-resource-record-sets \
+        --hosted-zone-id "${zone_id}" \
+        --change-batch "{
+          \"Comment\": \"Remove stale DNS record\",
+          \"Changes\": [
+            {
+              \"Action\": \"DELETE\",
+              \"ResourceRecordSet\": {
+                \"Name\": \"${record_name}.\",
+                \"Type\": \"${record_type}\",
+                \"TTL\": ${TTL},
+                \"ResourceRecords\": [
+                  { \"Value\": \"${record_value}\" }
+                ]
+              }
+            }
+          ]
+        }" || true
+}
+
+sync_record() {
+    local descriptor="$1"
+    local record_name="$2"
+    local desired_ip="$3"
+    local record_type="$4"
+    local recordset_blob="$5"
+
+    local current_ip=""
+    current_ip="$(get_record_value "${record_type}" "${recordset_blob}")"
+
+    log "Checking ${descriptor} for ${record_name}"
+    log "Desired ${descriptor}: ${desired_ip:-<none>}"
+    log "Current ${descriptor}: ${current_ip:-<none>}"
+
+    if [[ -n "${desired_ip}" ]]; then
+        if [[ "${desired_ip}" != "${current_ip}" ]]; then
+            upsert_recordset "${record_name}" "${record_type}" "${desired_ip}"
+        else
+            log "${descriptor} already matches; no change needed."
+        fi
+    else
+        log "No desired ${descriptor} address available."
+
+        if [[ "${record_type}" == "AAAA" && "${REMOVE_STALE_AAAA}" == "true" ]]; then
+            delete_recordset_if_present "${record_name}" "${record_type}" "${current_ip}"
+        else
+            log "Skipping ${record_type} cleanup."
+        fi
+    fi
+
+    log "-----"
+}
+
+main() {
+    if [[ -z "${zone_id:-}" ]]; then
+        echo "zone_id is not set in /foundryssl/variables.sh"
+        exit 1
+    fi
+
+    IMDS_TOKEN="$(get_imdsv2_token)"
+    get_instance_network_info "${IMDS_TOKEN}"
+
+    local ec2_ipv4=""
+    local ec2_ipv6=""
+
+    ec2_ipv4="$(get_preferred_public_ipv4 || true)"
+    ec2_ipv6="$(get_public_ipv6_from_metadata || true)"
 
     if [[ -z "${ec2_ipv4}" ]]; then
-        ec2_ipv4_raw="$(get_public_ipv4)"
-        if [[ "${ec2_ipv4_raw}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            ec2_ipv4="${ec2_ipv4_raw}"
-            echo "IPv4 retrieved: ${ec2_ipv4}"
-        fi
+        log "Warning: failed to determine public IPv4 address"
     fi
 
     if [[ -z "${ec2_ipv6}" ]]; then
-        ec2_ipv6_raw="$(get_public_ipv6)"
-        if [[ "${ec2_ipv6_raw}" =~ : ]]; then
-            ec2_ipv6="${ec2_ipv6_raw}"
-            echo "IPv6 retrieved: ${ec2_ipv6}"
-        else
-            if has_global_ipv6; then
-                echo "IPv6 lookup did not return a valid address on this attempt."
-            else
-                echo "No global IPv6 address present; skipping IPv6 lookup."
-            fi
-        fi
+        log "No public IPv6 address detected"
+    else
+        log "Using public IPv6: ${ec2_ipv6}"
     fi
 
-    # Proceed as soon as we have IPv4.
-    # IPv6 is optional and should never block the install.
-    if [[ -n "${ec2_ipv4}" ]]; then
-        break
+    local all_recordsets=""
+    all_recordsets="$(list_recordsets)"
+
+    local subdomain_fqdn="${subdomain}.${fqdn}"
+    local recordset_subdomain=""
+    recordset_subdomain="$(get_recordset_json "${subdomain_fqdn}" "${all_recordsets}")"
+
+    sync_record "IPv4" "${subdomain_fqdn}" "${ec2_ipv4}" "A" "${recordset_subdomain}"
+    sync_record "IPv6" "${subdomain_fqdn}" "${ec2_ipv6}" "AAAA" "${recordset_subdomain}"
+
+    if [[ "${webserver_bool}" == "True" ]]; then
+        local recordset_root=""
+        recordset_root="$(get_recordset_json "${fqdn}" "${all_recordsets}")"
+
+        sync_record "IPv4" "${fqdn}" "${ec2_ipv4}" "A" "${recordset_root}"
+        sync_record "IPv6" "${fqdn}" "${ec2_ipv6}" "AAAA" "${recordset_root}"
     fi
 
-    if (( attempt < max_retries )); then
-        echo "No IPv4 retrieved yet, retrying in ${retry_delay}s..."
-        sleep "${retry_delay}"
-    fi
-done
+    log "--- All done!"
+}
 
-if [[ -z "${ec2_ipv4}" ]]; then
-    echo "Warning: Failed to retrieve valid IPv4 address after ${max_retries} attempts"
-fi
-
-if [[ -z "${ec2_ipv6}" ]]; then
-    echo "Warning: Failed to retrieve valid IPv6 address after ${max_retries} attempts"
-fi
-
-# Get Route53 record sets
-recordset_subdomain="$(aws route53 list-resource-record-sets --hosted-zone-id "${zone_id}" | jq ".ResourceRecordSets[] | select(.Name==\"${subdomain}.${fqdn}.\")")"
-
-# --- Subdomain checks ---
-updateRecordset "IPv4" "${subdomain}.${fqdn}" "${ec2_ipv4}" "A" "${recordset_subdomain}"
-updateRecordset "IPv6" "${subdomain}.${fqdn}" "${ec2_ipv6}" "AAAA" "${recordset_subdomain}"
-
-# --- Optional domain checks ---
-if [[ "${webserver_bool}" == "True" ]]; then
-    recordset_fqdn="$(aws route53 list-resource-record-sets --hosted-zone-id "${zone_id}" | jq ".ResourceRecordSets[] | select(.Name==\"${fqdn}.\")")"
-
-    updateRecordset "IPv4" "${fqdn}" "${ec2_ipv4}" "A" "${recordset_fqdn}"
-    updateRecordset "IPv6" "${fqdn}" "${ec2_ipv6}" "AAAA" "${recordset_fqdn}"
-fi
-
-echo "--- All done!"
+main "$@"
