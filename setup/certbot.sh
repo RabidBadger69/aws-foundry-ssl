@@ -14,8 +14,8 @@ RESOLVED_IP=""
 
 echo "===== CERTBOT SETUP START ====="
 
-if [[ "${enable_letsencrypt}" == "False" ]]; then
-  echo "LetsEncrypt is disabled - check /foundryssl/variables.sh; exiting..."
+if [[ "${enable_letsencrypt:-False}" != "True" ]]; then
+  echo "LetsEncrypt is disabled - exiting..."
   exit 0
 fi
 
@@ -35,37 +35,41 @@ if [[ -z "${fqdn:-}" ]]; then
 fi
 
 echo "Installing certbot dependencies..."
-dnf install -y augeas-libs
+dnf install -y augeas-libs python3 python3-pip
 
 if [[ ! -d /opt/certbot ]]; then
-  python3 -m venv /opt/certbot/
+  python3 -m venv /opt/certbot
 fi
 
-"${CERTBOT_BIN%/certbot}/pip" install --upgrade pip
-"${CERTBOT_BIN%/certbot}/pip" install --upgrade certbot certbot-nginx
+/opt/certbot/bin/pip install --upgrade pip
+/opt/certbot/bin/pip install --upgrade certbot certbot-nginx
 
 ln -sf /opt/certbot/bin/certbot /usr/bin/certbot
 
 echo "Installing renewal scripts and timers..."
 mkdir -p /foundrycron
 
-cp /aws-foundry-ssl/setup/certbot/certbot.sh /foundrycron/certbot.sh
-chmod +x /foundrycron/certbot.sh
-
-cp /aws-foundry-ssl/setup/certbot/certbot.service /etc/systemd/system/certbot.service
-cp /aws-foundry-ssl/setup/certbot/certbot_start.timer /etc/systemd/system/certbot_start.timer
-cp /aws-foundry-ssl/setup/certbot/certbot_renew.timer /etc/systemd/system/certbot_renew.timer
-
-echo "Ensuring nginx helper include exists..."
-cp /aws-foundry-ssl/setup/nginx/drop /etc/nginx/conf.d/drop
-
-if ! grep -q "include conf.d/drop;" /etc/nginx/conf.d/foundryvtt.conf; then
-  sed -i -e 's|location / {|include conf.d/drop;\n\n    location / {|g' /etc/nginx/conf.d/foundryvtt.conf
+if [[ -f /aws-foundry-ssl/setup/certbot/certbot.sh ]]; then
+  cp /aws-foundry-ssl/setup/certbot/certbot.sh /foundrycron/certbot.sh
+  chmod +x /foundrycron/certbot.sh
 fi
 
-echo "Configuring Foundry to expect SSL..."
-sed -i 's/"proxyPort":.*/"proxyPort": "443",/g' /foundrydata/Config/options.json
-sed -i 's/"proxySSL":.*/"proxySSL": true,/g' /foundrydata/Config/options.json
+if [[ -f /aws-foundry-ssl/setup/certbot/certbot.service ]]; then
+  cp /aws-foundry-ssl/setup/certbot/certbot.service /etc/systemd/system/certbot.service
+fi
+
+if [[ -f /aws-foundry-ssl/setup/certbot/certbot_start.timer ]]; then
+  cp /aws-foundry-ssl/setup/certbot/certbot_start.timer /etc/systemd/system/certbot_start.timer
+fi
+
+if [[ -f /aws-foundry-ssl/setup/certbot/certbot_renew.timer ]]; then
+  cp /aws-foundry-ssl/setup/certbot/certbot_renew.timer /etc/systemd/system/certbot_renew.timer
+fi
+
+echo "Ensuring nginx helper include exists..."
+if [[ -f /aws-foundry-ssl/setup/nginx/drop ]]; then
+  cp /aws-foundry-ssl/setup/nginx/drop /etc/nginx/conf.d/drop
+fi
 
 echo "Removing default nginx site to avoid conflicts..."
 rm -f /etc/nginx/conf.d/default.conf
@@ -98,7 +102,7 @@ else
 
   if [[ "${RESOLVED_IP}" == "${PUBLIC_IP}" ]]; then
     if [[ -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
-      echo "Existing certificate found for ${DOMAIN}; checking renewal..."
+      echo "Existing certificate found for ${DOMAIN}; attempting renewal..."
       certbot renew --nginx --no-random-sleep-on-renew || true
     else
       echo "Requesting initial certificate for ${DOMAIN}..."
@@ -111,7 +115,7 @@ else
         -d "${DOMAIN}" || true
     fi
 
-    if [[ "${webserver_bool}" == "True" ]]; then
+    if [[ "${webserver_bool:-False}" == "True" ]]; then
       echo "Requesting optional webserver certificate for ${fqdn} and www.${fqdn}..."
       certbot --nginx \
         --agree-tos \
@@ -128,10 +132,25 @@ else
   fi
 fi
 
+echo "Configuring Foundry to expect SSL if certificate now exists..."
+if [[ -f /foundrydata/Config/options.json && -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
+  sed -i 's/"proxyPort":.*/"proxyPort": "443",/g' /foundrydata/Config/options.json
+
+  if grep -q '"proxySSL":' /foundrydata/Config/options.json; then
+    sed -i 's/"proxySSL":.*/"proxySSL": true,/g' /foundrydata/Config/options.json
+  fi
+fi
+
 echo "Enabling certbot timers..."
 systemctl daemon-reload
-systemctl enable --now certbot_start.timer
-systemctl enable --now certbot_renew.timer
+
+if [[ -f /etc/systemd/system/certbot_start.timer ]]; then
+  systemctl enable --now certbot_start.timer
+fi
+
+if [[ -f /etc/systemd/system/certbot_renew.timer ]]; then
+  systemctl enable --now certbot_renew.timer
+fi
 
 echo "Final nginx validation..."
 nginx -t
