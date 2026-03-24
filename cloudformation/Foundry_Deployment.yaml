@@ -405,7 +405,7 @@ Resources:
             A_Install_Git:
               command: sudo dnf install -y git
             B_Clone_Repo:
-              command: sudo git clone https://github.com/mikehdt/aws-foundry-ssl.git
+              command: sudo git clone https://github.com/RabidBadger69/aws-foundry-ssl.git
               cwd: /
             C_Start_Install:
               command: sudo bash /aws-foundry-ssl/setup/install.sh
