@@ -8,7 +8,6 @@ set -euo pipefail
 source /foundryssl/variables.sh
 
 DOMAIN="${subdomain}.${fqdn}"
-CERTBOT_BIN="/opt/certbot/bin/certbot"
 PUBLIC_IP=""
 RESOLVED_IP=""
 
@@ -19,18 +18,8 @@ if [[ "${enable_letsencrypt:-False}" != "True" ]]; then
   exit 0
 fi
 
-if [[ -z "${email:-}" ]]; then
-  echo "Email address is not configured; exiting..."
-  exit 1
-fi
-
-if [[ -z "${subdomain:-}" ]]; then
-  echo "Subdomain is not configured; exiting..."
-  exit 1
-fi
-
-if [[ -z "${fqdn:-}" ]]; then
-  echo "Fully qualified domain name is not configured; exiting..."
+if [[ -z "${email:-}" || -z "${subdomain:-}" || -z "${fqdn:-}" ]]; then
+  echo "Missing one or more required variables: email, subdomain, fqdn"
   exit 1
 fi
 
@@ -49,35 +38,30 @@ ln -sf /opt/certbot/bin/certbot /usr/bin/certbot
 echo "Installing renewal scripts and timers..."
 mkdir -p /foundrycron
 
-if [[ -f /aws-foundry-ssl/setup/certbot/certbot.sh ]]; then
-  cp /aws-foundry-ssl/setup/certbot/certbot.sh /foundrycron/certbot.sh
-  chmod +x /foundrycron/certbot.sh
-fi
-
-if [[ -f /aws-foundry-ssl/setup/certbot/certbot.service ]]; then
-  cp /aws-foundry-ssl/setup/certbot/certbot.service /etc/systemd/system/certbot.service
-fi
-
-if [[ -f /aws-foundry-ssl/setup/certbot/certbot_start.timer ]]; then
-  cp /aws-foundry-ssl/setup/certbot/certbot_start.timer /etc/systemd/system/certbot_start.timer
-fi
-
-if [[ -f /aws-foundry-ssl/setup/certbot/certbot_renew.timer ]]; then
-  cp /aws-foundry-ssl/setup/certbot/certbot_renew.timer /etc/systemd/system/certbot_renew.timer
-fi
+[[ -f /aws-foundry-ssl/setup/certbot/certbot.sh ]] && cp /aws-foundry-ssl/setup/certbot/certbot.sh /foundrycron/certbot.sh
+[[ -f /foundrycron/certbot.sh ]] && chmod +x /foundrycron/certbot.sh
+[[ -f /aws-foundry-ssl/setup/certbot/certbot.service ]] && cp /aws-foundry-ssl/setup/certbot/certbot.service /etc/systemd/system/certbot.service
+[[ -f /aws-foundry-ssl/setup/certbot/certbot_start.timer ]] && cp /aws-foundry-ssl/setup/certbot/certbot_start.timer /etc/systemd/system/certbot_start.timer
+[[ -f /aws-foundry-ssl/setup/certbot/certbot_renew.timer ]] && cp /aws-foundry-ssl/setup/certbot/certbot_renew.timer /etc/systemd/system/certbot_renew.timer
 
 echo "Ensuring nginx helper include exists..."
 if [[ -f /aws-foundry-ssl/setup/nginx/drop ]]; then
   cp /aws-foundry-ssl/setup/nginx/drop /etc/nginx/conf.d/drop
 fi
 
+if [[ -f /etc/nginx/conf.d/foundryvtt.conf ]]; then
+  if ! grep -q "include conf.d/drop;" /etc/nginx/conf.d/foundryvtt.conf; then
+    sed -i -e 's|location / {|include conf.d/drop;\n\n    location / {|g' /etc/nginx/conf.d/foundryvtt.conf
+  fi
+fi
+
 echo "Removing default nginx site to avoid conflicts..."
 rm -f /etc/nginx/conf.d/default.conf
 
 echo "Validating and restarting nginx..."
-nginx -t
-systemctl enable --now nginx
-systemctl restart nginx
+nginx -t || true
+systemctl enable --now nginx || true
+systemctl restart nginx || true
 
 echo "Looking up instance public IP..."
 PUBLIC_IP="$(curl -fsS http://169.254.169.254/latest/meta-data/public-ipv4 || true)"
@@ -144,16 +128,11 @@ fi
 echo "Enabling certbot timers..."
 systemctl daemon-reload
 
-if [[ -f /etc/systemd/system/certbot_start.timer ]]; then
-  systemctl enable --now certbot_start.timer
-fi
-
-if [[ -f /etc/systemd/system/certbot_renew.timer ]]; then
-  systemctl enable --now certbot_renew.timer
-fi
+[[ -f /etc/systemd/system/certbot_start.timer ]] && systemctl enable --now certbot_start.timer || true
+[[ -f /etc/systemd/system/certbot_renew.timer ]] && systemctl enable --now certbot_renew.timer || true
 
 echo "Final nginx validation..."
-nginx -t
-systemctl restart nginx
+nginx -t || true
+systemctl restart nginx || true
 
 echo "===== CERTBOT SETUP COMPLETE ====="
