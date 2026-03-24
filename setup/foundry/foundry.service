@@ -4,10 +4,10 @@ After=network.target
 
 [Service]
 Environment=NODE_PORT=30000
-WorkingDirectory=/home/foundry/foundry-install/
+WorkingDirectory=/home/foundry/foundry-install
 Type=simple
 User=foundry
-ExecStart=/usr/bin/node /home/foundry/foundry-install/main.js --dataPath=/foundrydata
+ExecStart=/usr/bin/node /home/foundry/foundry-install/resources/app/main.mjs --dataPath=/foundrydata
 Restart=always
 RestartSec=10s
 

@@ -6,7 +6,7 @@ log() {
 }
 
 # Set up logging to the logfile
-exec >> /tmp/foundry-setup.log 2>&1
+exec > >(tee -a /tmp/foundry-setup.log) 2>&1
 
 # Source variables - do this BEFORE set -x to avoid logging secrets
 # variables_tmp.sh contains sensitive AWS credentials
