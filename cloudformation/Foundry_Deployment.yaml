@@ -378,6 +378,7 @@ Resources:
                 subdomain=${SubdomainName}
                 email=${Email}
                 webserver_bool=${WebServerBool}
+                use_fixed_ip=${UseFixedIP}
                 enable_letsencrypt=${UseLetsEncryptTLS}
               mode: "000700"
               owner: root
@@ -467,6 +468,7 @@ Resources:
                 Effect: Allow
                 Action:
                   - ec2:DescribeInstances
+                  - ec2:DescribeAddresses
                   - ec2:CreateTags
                   - route53:ListResourceRecordSets
                   - route53:ChangeResourceRecordSets

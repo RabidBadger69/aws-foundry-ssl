@@ -6,7 +6,7 @@ Wants=network-online.target
 [Timer]
 Unit=hosted_zone_ip.service
 OnBootSec=15s
-OnUnitActiveSec=24h
+OnUnitActiveSec=1h
 
 [Install]
 WantedBy=timers.target

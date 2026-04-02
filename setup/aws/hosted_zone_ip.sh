@@ -9,6 +9,8 @@ source /foundryssl/variables.sh
 
 TTL=120
 REMOVE_STALE_AAAA=true
+EIP_LOOKUP_RETRIES=12
+EIP_LOOKUP_DELAY_SEC=10
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
@@ -59,17 +61,47 @@ get_instance_network_info() {
     log "Region: ${REGION}"
 }
 
-get_preferred_public_ipv4() {
-    local eip=""
-    local public_ipv4=""
-
-    eip="$(aws ec2 describe-addresses \
+get_elastic_ipv4() {
+    aws ec2 describe-addresses \
         --region "${REGION}" \
         --filters "Name=instance-id,Values=${INSTANCE_ID}" \
         --query 'Addresses[0].PublicIp' \
-        --output text 2>/dev/null || true)"
+        --output text 2>/dev/null || true
+}
 
-    if [[ -n "${eip}" && "${eip}" != "None" && "${eip}" != "null" ]]; then
+is_usable_ip_value() {
+    local value="$1"
+    [[ -n "${value}" && "${value}" != "None" && "${value}" != "null" ]]
+}
+
+get_preferred_public_ipv4() {
+    local eip=""
+    local public_ipv4=""
+    local attempt=1
+
+    if [[ "${use_fixed_ip:-False}" == "True" ]]; then
+        log "UseFixedIP=True; waiting for Elastic IP association..."
+
+        while (( attempt <= EIP_LOOKUP_RETRIES )); do
+            eip="$(get_elastic_ipv4)"
+
+            if is_usable_ip_value "${eip}"; then
+                log "Using Elastic IP: ${eip}"
+                echo "${eip}"
+                return 0
+            fi
+
+            log "Elastic IP not attached yet (attempt ${attempt}/${EIP_LOOKUP_RETRIES}); retrying in ${EIP_LOOKUP_DELAY_SEC}s"
+            sleep "${EIP_LOOKUP_DELAY_SEC}"
+            (( attempt++ ))
+        done
+
+        log "Elastic IP was not found after retries; falling back to instance public IPv4 lookup."
+    fi
+
+    eip="$(get_elastic_ipv4)"
+
+    if is_usable_ip_value "${eip}"; then
         log "Using Elastic IP: ${eip}"
         echo "${eip}"
         return 0
