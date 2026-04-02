@@ -1,5 +1,11 @@
 #!/bin/bash
 source /foundryssl/variables.sh
+CERTBOT_ENV_FLAGS=""
+
+if [[ "${enable_letsencrypt_staging:-False}" == "True" ]]; then
+    CERTBOT_ENV_FLAGS="--staging"
+    echo "LetsEncrypt staging mode enabled for testing."
+fi
 
 if [[ "${enable_letsencrypt}" == "False" ]]; then
     echo "LetsEncrypt is disabled - check /foundryssl/variables.sh; exiting..."
@@ -25,17 +31,17 @@ if [[ -d "/etc/letsencrypt/live/${subdomain}.${fqdn}" ]]; then
     echo "Checking TLS certificate for renewal..."
 
     # Certificate exists, we can check if it needs renewal
-    certbot renew --nginx --no-random-sleep-on-renew
+    certbot renew --nginx --no-random-sleep-on-renew ${CERTBOT_ENV_FLAGS}
     # --post-hook "systemctl restart nginx"
 else
     echo "TLS certificate not found, attempting to set it up..."
 
     # Try to fetch the certificates
-    certbot --agree-tos -n --nginx -d ${subdomain}.${fqdn} -m ${email} --no-eff-email
+    certbot --agree-tos -n --nginx ${CERTBOT_ENV_FLAGS} -d ${subdomain}.${fqdn} -m ${email} --no-eff-email
 
     # Install certificates for optional webserver
     if [[ ${webserver_bool} == 'True' ]]; then
-        certbot --agree-tos -n --nginx -d ${fqdn},www.${fqdn} -m ${email} --no-eff-email
+        certbot --agree-tos -n --nginx ${CERTBOT_ENV_FLAGS} -d ${fqdn},www.${fqdn} -m ${email} --no-eff-email
     fi
 fi
 

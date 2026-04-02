@@ -10,6 +10,7 @@ source /foundryssl/variables.sh
 DOMAIN="${subdomain}.${fqdn}"
 PUBLIC_IP=""
 RESOLVED_IP=""
+CERTBOT_ENV_FLAGS=""
 
 echo "===== CERTBOT SETUP START ====="
 
@@ -21,6 +22,11 @@ fi
 if [[ -z "${email:-}" || -z "${subdomain:-}" || -z "${fqdn:-}" ]]; then
   echo "Missing one or more required variables: email, subdomain, fqdn"
   exit 1
+fi
+
+if [[ "${enable_letsencrypt_staging:-False}" == "True" ]]; then
+  CERTBOT_ENV_FLAGS="--staging"
+  echo "LetsEncrypt staging mode enabled for testing."
 fi
 
 echo "Installing certbot dependencies..."
@@ -96,10 +102,11 @@ else
   if [[ "${RESOLVED_IP}" == "${PUBLIC_IP}" ]]; then
     if [[ -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
       echo "Existing certificate found for ${DOMAIN}; attempting renewal..."
-      certbot renew --nginx --no-random-sleep-on-renew || true
+      certbot renew --nginx --no-random-sleep-on-renew ${CERTBOT_ENV_FLAGS} || true
     else
       echo "Requesting initial certificate for ${DOMAIN}..."
       certbot --nginx \
+        ${CERTBOT_ENV_FLAGS} \
         --agree-tos \
         --non-interactive \
         --redirect \
@@ -111,6 +118,7 @@ else
     if [[ "${webserver_bool:-False}" == "True" ]]; then
       echo "Requesting optional webserver certificate for ${fqdn} and www.${fqdn}..."
       certbot --nginx \
+        ${CERTBOT_ENV_FLAGS} \
         --agree-tos \
         --non-interactive \
         --redirect \

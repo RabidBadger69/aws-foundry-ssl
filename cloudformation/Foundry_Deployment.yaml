@@ -18,6 +18,7 @@ Metadata:
           default: TLS (HTTPS) Configuration
         Parameters:
           - UseLetsEncryptTLS
+          - UseLetsEncryptStaging
           - Email
       - Label:
           default: Server Instance
@@ -71,6 +72,13 @@ Parameters:
       - "True"
       - "False"
     Default: "True"
+  UseLetsEncryptStaging:
+    Type: String
+    Description: Set to True to use LetsEncrypt staging for testing certificate issuance. Staging certificates are not trusted by browsers.
+    AllowedValues:
+      - "True"
+      - "False"
+    Default: "False"
   Email:
     Type: String
     Description: A valid email address is required for LetsEncrypt TLS certificates (even if you're testing)
@@ -380,6 +388,7 @@ Resources:
                 webserver_bool=${WebServerBool}
                 use_fixed_ip=${UseFixedIP}
                 enable_letsencrypt=${UseLetsEncryptTLS}
+                enable_letsencrypt_staging=${UseLetsEncryptStaging}
               mode: "000700"
               owner: root
               group: root
