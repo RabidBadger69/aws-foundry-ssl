@@ -417,6 +417,10 @@ Resources:
       KeyName: !Ref InstanceKey
       InstanceType: !Ref InstanceType
       ImageId: !Ref InstanceAmiId
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 12
       IamInstanceProfile: !Ref InstanceProfile
       SecurityGroupIds:
         - !Ref FoundryServerSG
