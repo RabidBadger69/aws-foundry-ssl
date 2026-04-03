@@ -1,13 +1,20 @@
 # AWS Foundry VTT CloudFormation Deployment with TLS Encryption
 
-This is a fork of the [**Foundry CF deploy script**](https://github.com/cat-box/aws-foundry-ssl) by Lupert and Cat, though it's diverged quite significantly.
+This repository is forked from [**mikehdt/aws-foundry-ssl**](https://github.com/mikehdt/aws-foundry-ssl), which itself builds on the earlier work by Lupert and Cat, and has since diverged significantly.
 
-**New Things**
+It has been tested against Foundry VTT 14 and is confirmed working as of April 3, 2026.
 
-- Supports Foundry 13+
+## High-Level Changes
+
+- Supports modern Foundry VTT releases, including Foundry 14
 - Amazon Linux 2023 on Graviton EC2s
 - Node 24.x
 - [IPv6 support](docs/IPv6.md)
+- Improved setup logging and CloudWatch visibility
+- Dynamic DNS reliability fixes for Route53 updates at boot
+- Foundry health check and automatic restart support
+- Configurable root volume sizing
+- Utility scripts for upgrades, permissions, and data migration
 
 Note this is just something being done in my spare time and for fun/interest. If you have any contributions, they're welcome. Please note that I'm only focusing on AWS as the supported hosting service.
 
@@ -60,6 +67,22 @@ If you want to use IPv6, see [the IPv6 docs](docs/IPv6.md) for how to configure 
 
 It should be automated from there. If all goes well, the server will take around five minutes or so to become accessible.
 
+## Instructions for Use
+
+At a high level, the workflow is:
+
+1. Download the Foundry VTT NodeJS build and make it reachable from AWS using a public or time-limited URL.
+2. Complete the one-time AWS pre-setup, especially your EC2 key pair.
+3. Deploy [cloudformation/Foundry_Deployment.yaml](/Users/danielatherton/Documents/Development/aws-foundry-ssl/cloudformation/Foundry_Deployment.yaml) through CloudFormation.
+4. Wait for the stack to finish, then open your configured Foundry domain.
+5. If needed, use SSH and CloudWatch logs to verify setup or troubleshoot first boot.
+
+For ongoing operation:
+
+- Start and stop the EC2 instance manually, or use the Systems Manager schedule described below.
+- Keep the instance packages updated periodically.
+- Use the upgrade docs before major Foundry or stack changes.
+
 ### Optional SSH Access
 
 If you want to allow yourself access via SSH, you must specify a valid [subnet range](https://www.calculator.net/ip-subnet-calculator.html) for your [IPv4 / IPv6 address](https://www.whatismyip.com/).
@@ -103,7 +126,21 @@ It's also recommended to SSH into the instance and run `sudo dnf upgrade` every 
 
 ## Upgrading From a Previous Installation
 
-see [Upgrading](docs/UPGRADING.md)
+See [Upgrading](docs/UPGRADING.md).
+
+If you are moving an existing Foundry world or data directory to a fresh server, use [`utils/migrate_foundry_data.sh`](utils/migrate_foundry_data.sh). The script securely copies `/foundrydata/Data` from one host to another over SSH, preserves ownership and permissions, and restarts Foundry on the destination when the transfer completes.
+
+Example dry run:
+
+```bash
+./utils/migrate_foundry_data.sh \
+  --key /path/to/key.pem \
+  --source-host old-server.example.com \
+  --dest-host new-server.example.com \
+  --dry-run
+```
+
+Then rerun the same command without `--dry-run` to perform the transfer.
 
 ## Debugging Failed CloudFormation
 
